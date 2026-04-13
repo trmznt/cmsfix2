@@ -8,6 +8,7 @@ CMSFix2 is built for the Litestar async framework and the Litestar-Pulse add-on 
 Installation
 ------------
 To install CMSFix2, please execute the following command in your terminal:
+
 .. code-block:: bash
 
    "${SHELL}" <(curl -L https://raw.githubusercontent.com/trmznt/cmsfix2/main/install.sh)
