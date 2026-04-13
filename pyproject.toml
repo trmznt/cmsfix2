@@ -1,0 +1,23 @@
+[project]
+name = "cmsfix2"
+version = "0.1.0"
+description = "CMSFix2 - simple CMS based on Litestar and Litestar-Pulse"
+readme = "README.rst"
+authors = [
+    { name = "anto @ alrescha", email = "trimarsanto@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = []
+
+[project.entry-points."litestar.commands"]
+cmsfix2mgr = "cmsfix2.cli.commands:cmsfix2mgr"
+
+[project.scripts]
+cmsfix2 = "cmsfix2:main"
+
+[tool.litestar]
+app = "cmsfix2.lib.app:init_app"
+
+[build-system]
+requires = ["uv_build>=0.9.18,<0.10.0"]
+build-backend = "uv_build"
