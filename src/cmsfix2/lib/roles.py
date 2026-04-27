@@ -1,4 +1,4 @@
-from litestar_pulse.lib.roles import *
+from litestar_pulse.lib.roles import *  # noqa: F401
 
 # cmsfix2 specific role definitions
 
