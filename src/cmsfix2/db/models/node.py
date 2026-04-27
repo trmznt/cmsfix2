@@ -7,7 +7,7 @@ from typing import Any, Optional
 
 import posixpath, time, datetime, difflib, yaml
 
-from sqlalchemy import ForeignKey, Sequence, UniqueConstraint, types
+from sqlalchemy import ForeignKey, Sequence, UniqueConstraint, CheckConstraint, types
 from sqlalchemy.orm import (
     DynamicMapped,
     Mapped,
@@ -15,18 +15,24 @@ from sqlalchemy.orm import (
     relationship,
     object_session,
     deferred,
-    backref,
 )
 from sqlalchemy.sql import func
 from sqlalchemy.ext.orderinglist import ordering_list
 
 from advanced_alchemy.types import JsonB
-
+from advanced_alchemy.mixins import SlugKey
 
 from litestar_pulse.lib import roles as r
-from litestar_pulse.db.models.coremixins import IdentityUUIDv7UserAuditBase, RoleMixin
+from litestar_pulse.db.models.coremixins import (
+    IdentityUUIDv7UserAuditBase,
+    IdentityUserAuditBase,
+    IdentityAuditBase,
+    RoleMixin,
+)
+from litestar_pulse.db import get_handler
 from litestar_pulse.db.models.account import User, Group
 from litestar_pulse.db.models.enumkey import EnumKey, enumkey_proxy
+from litestar_pulse.config.app import logger
 
 
 # the models employ litestar_pulse's BaseMixIn to provide id, lastuser_id and stamp
@@ -38,50 +44,59 @@ class Site(IdentityUUIDv7UserAuditBase, RoleMixin):
     __tablename__ = "sites"
 
     fqdn: Mapped[str] = mapped_column(
-        types.String(128), nullable=False, index=True, server_default="*"
+        types.String(128), nullable=False, index=True, unique=True
     )
 
     group_id: Mapped[int] = mapped_column(ForeignKey("groups.id"), nullable=False)
     group: Mapped[Group] = relationship(Group, uselist=False, foreign_keys=[group_id])
 
 
-class Node(IdentityUUIDv7UserAuditBase, RoleMixin):
-    """this class manages all objects that have path and permission"""
+class Node(IdentityUUIDv7UserAuditBase, SlugKey, RoleMixin):
+    """
+    This class manages Node objects, which are all objects that have path, slug and
+    necessary permission
+    """
 
     __tablename__ = "nodes"
 
     site_id: Mapped[int] = mapped_column(ForeignKey("sites.id"), nullable=False)
     site: Mapped[Site] = relationship("Site", uselist=False)
 
-    slug: Mapped[str] = mapped_column(types.String(128), nullable=False, index=True)
+    # full URL path of the node, generated from slug and parent path
     path: Mapped[str] = mapped_column(
-        types.String(1024), nullable=False, server_default=""
+        types.String(1024), nullable=False, server_default="", index=True
     )
+
+    # level is the depth of the node in the tree, with root node having level 0
     level: Mapped[int] = mapped_column(
         types.Integer, nullable=False, server_default="-1"
     )
 
+    # title of the node
     title: Mapped[str] = mapped_column(
         types.String(256), nullable=False, server_default=""
     )
 
+    # parent-child relationship
     parent_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("nodes.id"), nullable=True, index=True
     )
     parent: Mapped[Optional["Node"]] = relationship(
         "Node",
         remote_side="Node.id",
-        backref=backref("children", cascade="all, delete-orphan"),
+        back_populates="children",
     )
     children: DynamicMapped["Node"] = relationship(
         "Node",
         cascade="all, delete-orphan",
-        backref=backref("parent", remote_side="Node.id"),
+        back_populates="parent",
         order_by="Node.ordering",
         lazy="dynamic",
         collection_class=ordering_list("ordering"),
     )
 
+    # ordering is used to maintain the order of the children under the same parent
+    # with smaller value being ordered first
     ordering: Mapped[int] = mapped_column(types.Integer, nullable=False)
 
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
@@ -119,13 +134,24 @@ class Node(IdentityUUIDv7UserAuditBase, RoleMixin):
         types.Boolean, nullable=False, server_default="1"
     )
 
-    mimetype_id: Mapped[int] = mapped_column(ForeignKey("eks.id"), nullable=False)
+    mimetype_id: Mapped[int] = mapped_column(ForeignKey("enumkeys.id"), nullable=False)
     mimetype = enumkey_proxy("mimetype_id", "@MIMETYPE")
 
     json_code: Mapped[dict[str, Any]] = deferred(
         mapped_column(JsonB, nullable=False, server_default="{}")
     )
     # for more options on the above, see note at the end of this file
+
+    difflog_items: Mapped[list["DiffLog"]] = relationship(
+        "DiffLog",
+        cascade="all, delete-orphan",
+        back_populates="node",
+    )
+    tags: Mapped[list[Any]] = relationship(
+        "TaggedNode",
+        cascade="delete, delete-orphan",
+        back_populates="node",
+    )
 
     polymorphic_type: Mapped[int] = mapped_column(
         types.Integer, nullable=False, server_default="0", index=True
@@ -380,7 +406,9 @@ class Node(IdentityUUIDv7UserAuditBase, RoleMixin):
         if "uuid" in d:
             obj.uuid = uuid.UUID(d["uuid"])
             assert d["uuid"] == str(obj.uuid)
-        cerr(f"Created instance of [{obj.__class__.__name__}] with uuid: {obj.uuid}")
+        logger.info(
+            f"Created instance of [{obj.__class__.__name__}] with uuid: {obj.uuid}"
+        )
         obj.update(d)
         # update the low-level data
         # obj.user = None
@@ -399,20 +427,20 @@ class Node(IdentityUUIDv7UserAuditBase, RoleMixin):
     def _load(cls, d, source_dir):
 
         # restore user & group
-        dbh = get_dbhandler()
+        dbh = get_handler()
         d["site_id"] = dbh.get_site(d["site"]).id
         user = dbh.get_user(d["user"])
         if not user:
-            cexit("ERR: user %s does not exist!" % d["user"])
+            raise RuntimeError("ERR: user %s does not exist!" % d["user"])
         d["user_id"] = user.id
         d["lastuser"] = d.get("lastuser", d["user"])
         lastuser = dbh.get_user(d["lastuser"])
         if not lastuser:
-            cexit("ERR: user %s does not exist!" % d["lastuser"])
+            raise RuntimeError("ERR: user %s does not exist!" % d["lastuser"])
         d["lastuser_id"] = lastuser.id
         group = dbh.get_group(d["group"])
         if not group:
-            cexit("ERR: group %s does not exist!" % d["group"])
+            raise RuntimeError("ERR: group %s does not exist!" % d["group"])
         d["group_id"] = group.id
         mimetype = dbh.get_ekey(d["mimetype"])
         d["mimetype_id"] = mimetype.id
@@ -424,15 +452,15 @@ class Node(IdentityUUIDv7UserAuditBase, RoleMixin):
         # recreate node
         n = cls.from_dict(d)
         dbh.session().add(n)
-        print(n)
+        logger.info(n)
         return n
 
     @staticmethod
     def load(source_dir):
         with open(source_dir + "/_c.yaml") as f:
-            d = yaml.load(f.read())
+            d = yaml.safe_load(f.read())
         nodeclass = _nodeclasses_[d["_type_"]]
-        print("NodeClass:", nodeclass)
+        logger.info("NodeClass: %s", nodeclass)
         return nodeclass._load(d, source_dir)
 
     def ascendant(self, node):
@@ -442,7 +470,7 @@ class Node(IdentityUUIDv7UserAuditBase, RoleMixin):
         if self.level == node.level:
             return True if self == node else False
         parent_node = self.parent
-        while parent_node.level >= node.level:
+        while parent_node and parent_node.level >= node.level:
             if parent_node == node:
                 return True
             parent_node = self.parent
@@ -480,7 +508,11 @@ class Node(IdentityUUIDv7UserAuditBase, RoleMixin):
         )
 
 
-class DiffLog(BaseMixIn, Base):
+class DiffLog(IdentityUserAuditBase):
+    """
+    This class manages the difflog of a node, which is used to store the diff
+    between versions of a node
+    """
 
     __tablename__ = "difflogs"
 
@@ -488,16 +520,20 @@ class DiffLog(BaseMixIn, Base):
     node: Mapped[Node] = relationship(
         Node,
         uselist=False,
-        backref=backref("difflog", cascade="all, delete-orphan"),
+        back_populates="difflog_items",
     )
 
     diff: Mapped[str] = mapped_column(types.Text, nullable=False, server_default="")
 
     def __repr__(self):
-        return "<DiffLog|%d|%s>" % (self.node_id, self.stamp)
+        return "<DiffLog|%d|%s>" % (self.node_id, self.updated_at.isoformat())
 
 
-class Workflow(BaseMixIn, Base):
+class Workflow(IdentityUserAuditBase):
+    """
+    This class manages the workflow of a node, which is used to store the state of a node
+    in the workflow
+    """
 
     __tablename__ = "workflows"
 
@@ -517,7 +553,10 @@ class Workflow(BaseMixIn, Base):
     __table_args__ = (UniqueConstraint("node_id", "state"),)
 
 
-class ACL(BaseMixIn, Base):
+class ACL(IdentityUserAuditBase):
+    """
+    This class manages the ACL of a node, which is used to store the permission of a node
+    """
 
     __tablename__ = "xacls"
 
@@ -542,9 +581,27 @@ class ACL(BaseMixIn, Base):
     )
 
 
-class Tag(Base):
+class Tag(IdentityUserAuditBase):
+    """
+    This class manages tags
+    """
 
     __tablename__ = "tags"
+
+    tag: Mapped[str] = mapped_column(types.String(64), nullable=False, index=True)
+    tagged_nodes: Mapped[list["TaggedNode"]] = relationship(
+        "TaggedNode",
+        back_populates="tag",
+    )
+
+
+class TaggedNode(IdentityUserAuditBase):
+    """
+    This class manages the relationship between Node and Tag, which is used to store
+    the tags of a node
+    """
+
+    __tablename__ = "taggednodes"
 
     id: Mapped[int] = mapped_column(types.Integer, primary_key=True)
 
@@ -554,15 +611,18 @@ class Tag(Base):
     node: Mapped[Node] = relationship(
         Node,
         uselist=False,
-        backref=backref("tags", cascade="delete, delete-orphan"),
+        back_populates="tags",
     )
 
     tag_id: Mapped[int] = mapped_column(
-        ForeignKey("eks.id"), nullable=False, index=True
+        ForeignKey("tags.id"), nullable=False, index=True
     )
-    tag: Mapped[EK] = relationship(EK, uselist=False, foreign_keys=[tag_id])
-
-    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    tag: Mapped[Tag] = relationship(
+        Tag,
+        uselist=False,
+        foreign_keys=[tag_id],
+        back_populates="tagged_nodes",
+    )
 
     __table_args__ = (UniqueConstraint("node_id", "tag_id"),)
 
@@ -634,13 +694,15 @@ class Tag(Base):
         session.delete(tag)
 
 
-class NodeRelationship(Base):
+class NodeRelationship(IdentityUserAuditBase):
+    """
+    This class manages undirected graph or symmetric relationship between nodes,
+    which is used to store the relationship between nodes that cannot be represented
+    by parent-child relationship, such as related articles, or similar products
+    """
 
     __tablename__ = "noderelationships"
 
-    id: Mapped[int] = mapped_column(
-        types.Integer, Sequence("noderelationship_id", optional=True), primary_key=True
-    )
     node1_id: Mapped[int] = mapped_column(ForeignKey("nodes.id"), nullable=False)
     node2_id: Mapped[int] = mapped_column(ForeignKey("nodes.id"), nullable=False)
     text: Mapped[str] = mapped_column(
@@ -650,19 +712,28 @@ class NodeRelationship(Base):
         types.Integer, nullable=False, server_default="0"
     )
 
-    __table_args__ = (UniqueConstraint("node1_id", "node2_id"), {})
+    # always have to ensure that node1_id < node2_id to avoid duplicate relationships
 
     node1: Mapped[Node] = relationship(
         Node,
         uselist=False,
         foreign_keys=[node1_id],
-        backref=backref("noderel1", cascade="all,delete,delete-orphan"),
+        # back_populates="noderel1",
     )
     node2: Mapped[Node] = relationship(
         Node,
         uselist=False,
         foreign_keys=[node2_id],
-        backref=backref("noderel2", cascade="all,delete,delete-orphan"),
+        # back_populates="noderel2",
+    )
+
+    __table_args__ = (
+        UniqueConstraint("node1_id", "node2_id"),
+        CheckConstraint(
+            "node1_id < node2_id",
+            name="ck_noderelationships_node1_id_lt_node2_id",
+        ),
+        {},
     )
 
     @classmethod
@@ -707,7 +778,7 @@ _nodeclasses_ = {}
 
 def register_nodeclass(cls):
     global _nodeclasses_
-    cerr("Registering [%s]" % cls.__name__)
+    logger.info("Registering [%s]" % cls.__name__)
     if cls.__name__ not in _nodeclasses_:
         _nodeclasses_[cls.__name__] = cls
     elif _nodeclasses_[cls.__name__] != cls:
