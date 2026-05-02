@@ -29,11 +29,12 @@ class RebrandedGroup(pulsemgr.__class__):
 @click.group(cls=RebrandedGroup, name="cmsfix2mgr")
 def cmsfix2mgr(use_ipdb: bool):
     """This new group now has all the old options and commands."""
-    from litestar_pulse.db import set_initdb_function_factory
+    from litestar_pulse.db import set_initdb_function
+    from ..db.handler import CMSFix2Handler
+    from ..db.initdb import initialize_database
 
-    from ..lib.app import cmsfix2_initdb_function_factory
-
-    set_initdb_function_factory(cmsfix2_initdb_function_factory)
+    click.echo("Initializing CMSFix2 CLI...")
+    set_initdb_function(initialize_database)
 
     ctx = click.get_current_context()
     ctx.invoke(pulsemgr.callback, use_ipdb=use_ipdb)  # type: ignore
@@ -50,6 +51,16 @@ def cmsfix2mgr(use_ipdb: bool):
 
 
 # 3. Add your new commands here
+
+
+@cmsfix2mgr.command(name="site-list")
+async def site_list():
+    click.echo("Listing sites...")
+
+    async with get_dbhandler() as dbh:
+        sites = await dbh.repo.Site.list()
+        for site in sites:
+            click.echo(f"- {site.fqdn} (Group: {await site.awaitable_attrs.group})")
 
 
 @cmsfix2mgr.command(name="institution-list")
