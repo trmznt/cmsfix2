@@ -36,7 +36,7 @@ async def initialize_cmsfix2_seed(
         return False
 
     # additional CMSFix2 specific seeding can be added here if needed
-    site_payloads = normalize_site_payload(getattr(seed, "SITES", []))
+    site_payloads = await normalize_site_payload(getattr(seed, "SITES", []))
     sites = await ensure_sites(site_payloads)
     result_dict["sites"] = sites
 
@@ -60,7 +60,7 @@ async def initialize_database(initialize: bool = True) -> dict[str, int]:
     return {}
 
 
-def normalize_site_payload(
+async def normalize_site_payload(
     payloads: list[tuple[str, str]],
 ) -> list[dict[str, Any]]:
     """
@@ -139,6 +139,7 @@ async def ensure_nodes(payloads: list[dict[str, Any]]) -> int:
     counter = 0
     dbh = get_handler()
     for node_dict in payloads:
+        node = dbh.service.Node.upsert_from_dict(node_dict)
         site_fqdn = node_dict.pop("site_fqdn", None)
         if site_fqdn is None:
             logger.warning(f"Node payload is missing 'site_fqdn': {node_dict}")

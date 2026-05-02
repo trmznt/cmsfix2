@@ -27,6 +27,7 @@ SITES = [
 ]
 
 NODES = [
-    # (type, site, slug, parent_slug, title, content)
+    # (type, site, slug, parent_slug, title, user, group)
+    "Node", "*", "/", None, "root", "sysadm", "SiteManager" 
 ]
 # EOF
