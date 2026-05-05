@@ -1,4 +1,11 @@
+# SPDX-FileCopyrightText: 2026 Hidayat Trimarsanto <trimarsanto@gmail.com>
+# SPDX-License-Identifier: MPL-2.0
+
 from __future__ import annotations
+
+__copyright__ = "(C) 2026 Hidayat Trimarsanto <trimarsanto@gmail.com>"
+__author__ = "trimarsanto@gmail.com"
+__license__ = "MPL-2.0"
 
 from typing import Any
 
